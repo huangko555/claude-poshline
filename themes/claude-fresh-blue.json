@@ -1,0 +1,11 @@
+{
+  "name": "claude-fresh-blue",
+  "base": "dark",
+  "overrides": {
+    "promptBorder": "#B6C5D3",
+    "promptBorderShimmer": "#D2DCE5",
+    "briefLabelYou": "#B6C5D3",
+    "userMessageBackground": "#0E7490",
+    "userMessageBackgroundHover": "#0F7E9A"
+  }
+}

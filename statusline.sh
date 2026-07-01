@@ -110,6 +110,11 @@ else
   parts+=("$gitstr")
 fi
 
+# ---- provider detection (model name decides Claude vs DeepSeek path) ----
+field '"display_name":"([^"]*)"'; model="$F"
+is_ds=0
+[[ "${model,,}" == *deepseek* ]] && is_ds=1
+
 # ---- context window ----
 # used_percentage belongs to context_window iff it's the one followed by "remaining_percentage"
 # (rate_limits also has used_percentage); null early in a session -> no match -> ctx hidden.
@@ -117,12 +122,26 @@ field '"used_percentage":([0-9.]+),"remaining_percentage"'; ctx="$F"
 if [ -n "$ctx" ]; then
   printf -v used '%.0f' "$ctx"
   field '"context_window":[{][^}]*"total_input_tokens":([0-9.]+)'; printf -v tokK '%.0f' "${F:-0}"; tokK=$(( tokK / 1000 ))
-  field '"context_window":[{][^}]*"context_window_size":([0-9.]+)'; printf -v sizeK '%.0f' "${F:-0}"; sizeK=$(( sizeK / 1000 ))
+  if [ "$is_ds" -eq 1 ]; then
+    # DeepSeek: override context size by model (JSON may report wrong value)
+    if [[ "${model,,}" == *deepseek-v4-flash* ]]; then
+      sizeK=200   # v4-flash: 200K
+    else
+      sizeK=1000  # default DeepSeek: 1M
+    fi
+    # recalculate percentage based on real window size (JSON % is based on wrong size)
+    if [ "$sizeK" -gt 0 ]; then
+      used=$(awk "BEGIN {printf \"%.0f\", $tokK / $sizeK * 100}")
+    fi
+  else
+    field '"context_window":[{][^}]*"context_window_size":([0-9.]+)'; printf -v sizeK '%.0f' "${F:-0}"; sizeK=$(( sizeK / 1000 ))
+  fi
   pctcol "$used" 36
   parts+=("${E}[${ACCENT}mctx ${E}[0m${E}[${PC}m${used}%${E}[0m${E}[${ACCENT}m (${tokK}k/${sizeK}k)${E}[0m")
 fi
 
-# ---- usage / quota: 5h (reset clock) + 7d ----
+# ---- usage / quota: 5h (reset clock) + 7d (Anthropic-only; hidden for DeepSeek) ----
+if [ "$is_ds" -eq 0 ]; then
 field '"five_hour":[{][^}]*"used_percentage":([0-9.]+)'; h5="$F"
 field '"seven_day":[{][^}]*"used_percentage":([0-9.]+)'; d7="$F"
 usg=""
@@ -143,13 +162,52 @@ if [ -n "$d7" ]; then
   usg+="${E}[${ACCENT}m (7d ${E}[0m${E}[${c7}m${d7r}%${E}[0m${E}[${ACCENT}m)${E}[0m"
 fi
 [ -n "$usg" ] && parts+=("$usg")
+fi   # end of Anthropic-only quota block
 
-# ---- model (+ effort level in gray), pushed last so it shows at the end of the bar ----
-field '"display_name":"([^"]*)"'; model="$F"
+# ---- DeepSeek balance (cached 5min, async bg refresh) ----
+if [ "$is_ds" -eq 1 ]; then
+  cache="$HOME/.claude/.poshline-balance"
+  now=$(date +%s)
+  bal=""; cache_fresh=0
+  if [ -f "$cache" ]; then
+    cache_ts=$(head -1 "$cache" 2>/dev/null)
+    [ -n "$cache_ts" ] && [ $(( now - cache_ts )) -lt 300 ] && cache_fresh=1
+    bal=$(tail -1 "$cache" 2>/dev/null)
+  fi
+  # bg refresh if stale and API key is in env (set by ccswitch via Claude Code settings.json)
+  if [ "$cache_fresh" -eq 0 ] && [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    lock="$HOME/.claude/.poshline-balance.lock"
+    skip=0
+    if [ -f "$lock" ]; then
+      lock_ts=$(head -1 "$lock" 2>/dev/null)
+      [ -n "$lock_ts" ] && [ $(( now - lock_ts )) -lt 30 ] && skip=1
+    fi
+    if [ "$skip" -eq 0 ]; then
+      printf '%s\n' "$now" > "$lock"
+      ( now="$now"; token="$ANTHROPIC_AUTH_TOKEN"; cache="$cache"; lock="$lock"
+        resp=$(curl -sL -m 5 -H "Authorization: Bearer $token" -H "Accept: application/json" "https://api.deepseek.com/user/balance" 2>/dev/null)
+        bal_val=$(printf '%s' "$resp" | grep -o '"total_balance":"[^"]*"' | head -1 | grep -o '[0-9.]*')
+        if [ -n "$bal_val" ]; then
+          printf '%s\n%s\n' "$now" "$bal_val" > "$cache.tmp" && mv "$cache.tmp" "$cache"
+        fi
+        rm -f "$lock"
+      ) &
+    fi
+  fi
+  if [ -n "$bal" ]; then
+    parts+=("${E}[${ACCENT}mbal ¥${E}[0m${E}[32m${bal}${E}[0m")
+  fi
+fi
+
+# ---- model (+ effort level for Claude only), pushed last so it shows at the end of the bar ----
 if [ -n "$model" ]; then
-  m="${E}[36m${model}${E}[0m"
-  field '"effort":[{]"level":"([^"]*)"'; effort="$F"
-  [ -n "$effort" ] && m+="${E}[${ACCENT}m ${effort}${E}[0m"
+  if [ "$is_ds" -eq 1 ]; then
+    m="${E}[38;2;150;166;246m${model}${E}[0m"        # #96a6f6 for DeepSeek
+  else
+    m="${E}[36m${model}${E}[0m"                    # cyan for Claude
+    field '"effort":[{]"level":"([^"]*)"'; effort="$F"
+    [ -n "$effort" ] && m+="${E}[${ACCENT}m ${effort}${E}[0m"
+  fi
   parts+=("$m")
 fi
 

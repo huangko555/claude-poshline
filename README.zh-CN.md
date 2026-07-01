@@ -16,8 +16,8 @@
   - 尾标志：`!`=工作区脏、`~`=仅暂存、`=`=干净且同步
   - 不在 git 仓库时显示 `[no git]`
 - **`ctx <已用>% (Nk/Mk)`** —— 当前会话上下文用量
-- **`usg 5h <已用>% @<重置时刻> (7d <已用>%)`** —— Claude 额度用量
-- **`<模型> <effort>`** —— 当前模型和 effort 等级
+- **`usg 5h <已用>% @<重置时刻> (7d <已用>%)`** —— Claude 额度用量 *（DeepSeek 下隐藏，见下文）*
+- **`<模型> <effort>`** —— 当前模型和 effort 等级 *（DeepSeek 下隐藏 effort，模型用 `#96a6f6` 色）*
 
 百分比按数值自动变色：
 
@@ -25,6 +25,30 @@
 - `usg 7d`：灰 `<90` → 亮红 `≥90`
 
 ![色阶示例](docs/color-states.png)
+
+## DeepSeek 适配
+
+当 Claude Code 通过 `ANTHROPIC_BASE_URL` 指向 `https://api.deepseek.com/anthropic` 接入 DeepSeek API 时，状态栏会自动识别并调整显示内容，无需额外配置。检测依据是会话 JSON 中 `display_name` 字段是否包含 `"deepseek"`（不区分大小写）。
+
+![deepseek 截图](docs/screenshot-deepseek.zh-CN.png)
+
+### 显示差异
+
+| 段位 | Claude 原生 | DeepSeek |
+|---|---|---|
+| **usg（额度）** | 5h 滚动窗口 + 7d 用量 | **隐藏** —— Anthropic 的额度模型对 DeepSeek 按量付费不适用 |
+| **effort 等级** | 模型名后显示 | **隐藏** —— DeepSeek 映射方式不同（low/medium→high，xhigh→max），无参考意义 |
+| **模型颜色** | 青色 | `#96a6f6`（柔和蓝紫），一眼区分当前用哪家 |
+| **上下文窗口** | 直接读 JSON 值 | **自动修正**：DeepSeek 模型默认 **1M** tokens，`deepseek-v4-flash` 为 **200K**。百分比按真实窗口重算，不会误报 |
+| **余额** | （不显示） | `bal ¥<金额>`，调用 DeepSeek `/user/balance` 接口查询，**5 分钟缓存** |
+
+### 余额查询机制
+
+- API key 从环境变量 `ANTHROPIC_AUTH_TOKEN` 读取（由 ccswitch 或 Claude Code 的 `settings.json` 中 `env` 块注入），**不会写进脚本文件**。
+- 缓存文件位于 `~/.claude/.poshline-balance`。缓存 5 分钟内直接读，状态栏瞬间渲染。
+- 缓存过期时：继续显示旧值，**后台异步** `curl` 静默刷新，不阻塞状态栏。
+- 锁文件防并发，同一时间只有一个刷新任务在跑。
+- 若从未拉取到余额（首次使用或 API 调用失败），余额段不显示，不影响其余功能。
 
 ## 自适应宽度换行
 

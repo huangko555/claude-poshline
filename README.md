@@ -16,8 +16,8 @@ From left to right:
   - trailing flag: `!` dirty, `~` staged only, `=` clean & synced
   - `[no git]` when not in a repo
 - **`ctx <used>% (Nk/Mk)`** — conversation context usage
-- **`usg 5h <used>% @<reset-clock> (7d <used>%)`** — Claude rate-limit quota
-- **`<model> <effort>`** — current model and effort level
+- **`usg 5h <used>% @<reset-clock> (7d <used>%)`** — Claude rate-limit quota *(hidden for DeepSeek — see below)*
+- **`<model> <effort>`** — current model and effort level *(effort hidden for DeepSeek; model shown in `#96a6f6`)*
 
 Percentages change color by value:
 
@@ -25,6 +25,29 @@ Percentages change color by value:
 - `usg 7d`: gray `<90` → red `≥90`
 
 ![color states](docs/color-states.png)
+
+## DeepSeek support
+
+When Claude Code is configured with a DeepSeek API endpoint (`ANTHROPIC_BASE_URL` → `https://api.deepseek.com/anthropic`), the status line adapts automatically — no config needed. Detection is by the `display_name` field in the session JSON (case-insensitive match on `"deepseek"`).
+
+![deepseek screenshot](docs/screenshot-deepseek.png)
+
+### What changes
+
+| Segment | Claude native | DeepSeek |
+|---|---|---|
+| **usg (quota)** | 5h rolling + 7d usage | **hidden** — Anthropic's rate-limit model doesn't apply to DeepSeek's pay-per-token billing |
+| **effort level** | shown after model name | **hidden** — DeepSeek maps effort differently (low/medium→high, xhigh→max) |
+| **model color** | cyan | `#96a6f6` (soft blue-purple) for visual distinction |
+| **context window** | read from JSON as-is | **corrected**: DeepSeek models default to **1M** tokens; `deepseek-v4-flash` is **200K**. Percentage recalculated against the real window |
+| **balance** | (not shown) | `bal ¥<amount>` queried from DeepSeek's `/user/balance` API with a **5-minute cache** |
+
+### How balance works
+
+- Reads `ANTHROPIC_AUTH_TOKEN` from the environment (set by ccswitch or Claude Code's `settings.json` `env` block). The API key is **never** written into the script.
+- Cache file at `~/.claude/.poshline-balance`. Fresh for 5 minutes — during that window the status bar renders instantly.
+- When the cache expires: the **stale value** is still shown while a background `curl` refreshes it asynchronously. No blocking.
+- A lock file prevents concurrent refresh requests.
 
 ## Auto width-aware wrapping
 

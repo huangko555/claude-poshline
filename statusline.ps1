@@ -77,10 +77,16 @@ if ($d.cwd) { Pop-Location }
 # ">> " prefix + folder name (yellow) + space + bracketed git status, posh-git style
 if ($leaf) { $parts += (C $ACCENT '>> ') + (C '33' $leaf) + ' ' + $gitStr } else { $parts += $gitStr }
 
-# ---- model (+ effort level appended in gray) ----
+# ---- model (+ effort level for Claude only; DeepSeek gets magenta, no effort) ----
+$isDS = $false
 if ($d.model.display_name) {
-    $m = C '36' $d.model.display_name                # cyan
-    if ($d.effort.level) { $m += C $ACCENT " $($d.effort.level)" }   # e.g. "high"
+    $isDS = $d.model.display_name -match 'deepseek'
+    if ($isDS) {
+        $m = C '38;2;150;166;246' $d.model.display_name   # #96a6f6 for DeepSeek
+    } else {
+        $m = C '36' $d.model.display_name                # cyan for Claude
+        if ($d.effort.level) { $m += C $ACCENT " $($d.effort.level)" }
+    }
     $modelPart = $m   # pushed last (after usg) so model shows at the end of the bar
 }
 
@@ -89,13 +95,27 @@ $cw = $d.context_window
 if ($cw -and $null -ne $cw.used_percentage) {
     $used  = [math]::Round([double]$cw.used_percentage)
     $tokK  = [math]::Round([double]$cw.total_input_tokens / 1000)
-    $sizeK = [math]::Round([double]$cw.context_window_size / 1000)
+    if ($isDS) {
+        # DeepSeek: override context size by model (JSON may report wrong value)
+        if ($d.model.display_name -match 'deepseek-v4-flash') {
+            $sizeK = 200   # v4-flash: 200K
+        } else {
+            $sizeK = 1000  # default DeepSeek: 1M
+        }
+        # recalculate percentage based on real window size (JSON % is based on wrong size)
+        if ($sizeK -gt 0) {
+            $used = [math]::Round([double]$tokK / $sizeK * 100)
+        }
+    } else {
+        $sizeK = [math]::Round([double]$cw.context_window_size / 1000)
+    }
     $col   = PctColor $used 36
     $parts += (C $ACCENT 'ctx ') + (C $col "$used%") + (C $ACCENT " (${tokK}k/${sizeK}k)")
 }
 
-# ---- usage / quota: 5h (reset as clock time) + 7d in parentheses, one block ----
+# ---- usage / quota: 5h (reset as clock time) + 7d (Anthropic-only; hidden for DeepSeek) ----
 # each % colors by its own value: 5h green (red >=80), 7d gray (red >=80).
+if (-not $isDS) {
 $rl = $d.rate_limits
 if ($rl) {
     $u = ''
@@ -117,6 +137,45 @@ if ($rl) {
         $u += (C $ACCENT ' (7d ') + (C $c7 "$d7%") + (C $ACCENT ')')
     }
     if ($hasUsg) { $parts += $u }
+}
+}   # end of Anthropic-only quota block
+
+# ---- DeepSeek balance (cached 5min) ----
+if ($isDS) {
+    $cacheFile = "$env:USERPROFILE\.claude\.poshline-balance"
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $bal = $null; $cacheFresh = $false
+    if (Test-Path $cacheFile) {
+        $lines = Get-Content $cacheFile -TotalCount 2 -ErrorAction SilentlyContinue
+        $cacheTs = if ($lines.Count -ge 1) { [long]$lines[0] } else { 0 }
+        if ($cacheTs -and ($now - $cacheTs) -lt 300) { $cacheFresh = $true }
+        if ($lines.Count -ge 2) { $bal = $lines[1] }
+    }
+    if (-not $cacheFresh -and $env:ANTHROPIC_AUTH_TOKEN) {
+        $lockFile = "$env:USERPROFILE\.claude\.poshline-balance.lock"
+        $skip = $false
+        if (Test-Path $lockFile) {
+            $lockTs = [long](Get-Content $lockFile -TotalCount 1 -ErrorAction SilentlyContinue)
+            if ($lockTs -and ($now - $lockTs) -lt 30) { $skip = $true }
+        }
+        if (-not $skip) {
+            "$now" | Set-Content $lockFile
+            try {
+                $resp = Invoke-RestMethod -Uri "https://api.deepseek.com/user/balance" `
+                    -Headers @{Authorization="Bearer $env:ANTHROPIC_AUTH_TOKEN"; Accept="application/json"} `
+                    -TimeoutSec 3 -ErrorAction Stop
+                $newBal = $resp.balance_infos[0].total_balance
+                if ($newBal) {
+                    "$now`n$newBal" | Set-Content $cacheFile
+                    $bal = $newBal
+                }
+            } catch {}
+            Remove-Item $lockFile -ErrorAction SilentlyContinue
+        }
+    }
+    if ($bal) {
+        $parts += (C $ACCENT 'bal ¥') + (C '32' $bal)
+    }
 }
 
 if ($modelPart) { $parts += $modelPart }

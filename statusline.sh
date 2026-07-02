@@ -166,6 +166,32 @@ fi   # end of Anthropic-only quota block
 
 # ---- DeepSeek balance (cached 5min, async bg refresh) ----
 if [ "$is_ds" -eq 1 ]; then
+  # ---- auto-detect proxy mode & resolve the real DeepSeek API key ----
+  # CCR (claude-code-router): base URL points to 127.0.0.1 / localhost.
+  # The ANTHROPIC_AUTH_TOKEN env var holds CCR's own internal key, NOT the
+  # DeepSeek key.  In that case we read the real key from CCR's gateway config
+  # (gateway.config.json) so balance queries actually work.  Nothing is stored
+  # in the script — the key lives only in the CCR config.
+  is_ccr=0
+  [[ "${ANTHROPIC_BASE_URL:-}"     == *"127.0.0.1"* || "${ANTHROPIC_BASE_URL:-}"     == *"localhost"* ]] && is_ccr=1
+  [[ "${ANTHROPIC_API_BASE_URL:-}" == *"127.0.0.1"* || "${ANTHROPIC_API_BASE_URL:-}" == *"localhost"* ]] && is_ccr=1
+
+  ds_key="${ANTHROPIC_AUTH_TOKEN:-}"                        # default: direct-connect key from env
+  if [ "$is_ccr" -eq 1 ]; then
+    ccr_config="${APPDATA:-$HOME/AppData/Roaming}/claude-code-router/gateway.config.json"
+    if [ -f "$ccr_config" ]; then
+      ccr_last_key=""
+      while IFS= read -r l; do
+        if [[ "$l" =~ \"apikey\":\ *\"([^\"]+)\" ]]; then
+          ccr_last_key="${BASH_REMATCH[1]}"
+        elif [[ "$l" =~ \"baseurl\".*deepseek ]] && [ -n "$ccr_last_key" ]; then
+          ds_key="$ccr_last_key"                            # found real DeepSeek key in CCR config
+          break
+        fi
+      done < "$ccr_config"
+    fi
+  fi
+
   cache="$HOME/.claude/.poshline-balance"
   now=$(date +%s)
   bal=""; cache_fresh=0
@@ -174,8 +200,8 @@ if [ "$is_ds" -eq 1 ]; then
     [ -n "$cache_ts" ] && [ $(( now - cache_ts )) -lt 300 ] && cache_fresh=1
     bal=$(tail -1 "$cache" 2>/dev/null)
   fi
-  # bg refresh if stale and API key is in env (set by ccswitch via Claude Code settings.json)
-  if [ "$cache_fresh" -eq 0 ] && [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+  # bg refresh if stale and we have a key (env for direct, or extracted from CCR config)
+  if [ "$cache_fresh" -eq 0 ] && [ -n "$ds_key" ]; then
     lock="$HOME/.claude/.poshline-balance.lock"
     skip=0
     if [ -f "$lock" ]; then
@@ -184,7 +210,7 @@ if [ "$is_ds" -eq 1 ]; then
     fi
     if [ "$skip" -eq 0 ]; then
       printf '%s\n' "$now" > "$lock"
-      ( now="$now"; token="$ANTHROPIC_AUTH_TOKEN"; cache="$cache"; lock="$lock"
+      ( now="$now"; token="$ds_key"; cache="$cache"; lock="$lock"
         resp=$(curl -sL -m 5 -H "Authorization: Bearer $token" -H "Accept: application/json" "https://api.deepseek.com/user/balance" 2>/dev/null)
         bal_val=$(printf '%s' "$resp" | grep -o '"total_balance":"[^"]*"' | head -1 | grep -o '[0-9.]*')
         if [ -n "$bal_val" ]; then

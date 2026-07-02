@@ -28,7 +28,16 @@
 
 ## DeepSeek 适配
 
-当 Claude Code 通过 `ANTHROPIC_BASE_URL` 指向 `https://api.deepseek.com/anthropic` 接入 DeepSeek API 时，状态栏会自动识别并调整显示内容，无需额外配置。检测依据是会话 JSON 中 `display_name` 字段是否包含 `"deepseek"`（不区分大小写）。
+当 Claude Code 通过 DeepSeek API 接入时，状态栏会自动识别并调整显示内容，无需额外配置。检测依据是会话 JSON 中 `display_name` 字段是否包含 `"deepseek"`（不区分大小写）。
+
+支持两种接入方式，**自动识别**：
+
+| 接入方式 | 检测方式 | API key 来源 |
+|---|---|---|
+| **直连** | `ANTHROPIC_BASE_URL` 指向 `https://api.deepseek.com/...` | 环境变量 `ANTHROPIC_AUTH_TOKEN` |
+| **claude-code-router 代理** | `ANTHROPIC_BASE_URL` 指向 `127.0.0.1` / `localhost` | 自动从 CCR 的 `gateway.config.json` 里读取 DeepSeek 真 key |
+
+脚本本身**不存储任何 API key**——key 始终只在你本机的 CCR 配置或环境变量里。
 
 ![deepseek 截图](docs/screenshot-deepseek.zh-CN.png)
 
@@ -44,7 +53,9 @@
 
 ### 余额查询机制
 
-- API key 从环境变量 `ANTHROPIC_AUTH_TOKEN` 读取（由 ccswitch 或 Claude Code 的 `settings.json` 中 `env` 块注入），**不会写进脚本文件**。
+- **直连模式**：API key 从环境变量 `ANTHROPIC_AUTH_TOKEN` 读取。
+- **CCR 模式**：API key 自动从 `%APPDATA%/claude-code-router/gateway.config.json` 里第一个 DeepSeek provider 读取，无需手动配置。
+- 以上 key 均**不会写进状态栏脚本文件**，只做运行时读取。
 - 缓存文件位于 `~/.claude/.poshline-balance`。缓存 5 分钟内直接读，状态栏瞬间渲染。
 - 缓存过期时：继续显示旧值，**后台异步** `curl` 静默刷新，不阻塞状态栏。
 - 锁文件防并发，同一时间只有一个刷新任务在跑。
@@ -92,7 +103,7 @@
 
 1. **Pick the script.** On Windows, default to the **Bash version** (`statusline.sh`) — the PowerShell version breaks on non-ASCII paths on Chinese Windows. Only use `statusline.ps1` if the user explicitly asks for it or has no Git Bash. On macOS / Linux, use the Bash version.
 2. **Fetch and place the script.** Download the chosen script from this repo's raw URL and write it to `~/.claude/statusline.sh` (or `.ps1`). For the Bash version, ensure **LF** line endings (not CRLF) and that the file is executable.
-3. **Merge `~/.claude/settings.json`.** If the file exists, read it, add the `statusLine` block below as a top-level key, preserve every other key, then write valid JSON back. If it doesn't exist, create it with just this block. Substitute the user's actual username in the path:
+3. **Merge `~/.claude/settings.local.json`** (NOT `settings.json`——`/model` and `/theme` slash commands overwrite `settings.json` and will drop the `statusLine` key). Use `settings.local.json` instead; Claude Code merges both files. If the file exists, read it, add the `statusLine` block below as a top-level key, preserve every other key, then write valid JSON back. If it doesn't exist, create it with just this block. Substitute the user's actual username in the path:
    - Bash: `"command": "bash /c/Users/<USER>/.claude/statusline.sh"` (on macOS/Linux use the native path)
    - PowerShell: `"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File C:/Users/<USER>/.claude/statusline.ps1"`
    - Both blocks also need `"type": "command"`, `"padding": 1`, `"refreshInterval": 5`.
@@ -114,7 +125,7 @@
    cp statusline.ps1 ~/.claude/statusline.ps1
    ```
 
-2. 把下面这段合并到 `~/.claude/settings.json`（已有的其它键别动）：
+2. 把下面这段合并到 `~/.claude/settings.local.json`（如果没有这个文件就新建）。**放在 `settings.local.json` 而非 `settings.json`**，防止 `/model`、`/theme` 等命令重写配置时把 `statusLine` 丢掉：
 
    **Bash 版**（把 `<USER>` 换成你的用户名）：
 
@@ -148,9 +159,11 @@
 
 ### 排错
 
+- **状态栏突然不显示了（重启后消失）** —— `/model`、`/theme` 等命令会重写 `settings.json`，把不在模板里的 `statusLine` 干掉。把 `statusLine` 配置放在 `settings.local.json` 里即可一劳永逸（Claude Code 合并两个文件，本地文件不会被命令覆盖）。
 - **状态栏空白** —— `bash` 可能不在 Claude Code 的 `PATH` 里。改用完整路径：`"C:/Program Files/Git/bin/bash.exe" /c/Users/<USER>/.claude/statusline.sh`。
 - **`statusline.sh` 启动报错** —— 检查文件换行符是不是 **LF**，不能是 CRLF。
 - **中文路径下 PowerShell 版只显示 `[no git]`** —— 中文 Windows 默认代码页 936，会把 UTF-8 的会话 JSON 解码坏。换成 Bash 版即可（它按原始字节读 stdin，不受代码页影响）。
+- **余额不显示（CCR 模式）** —— 确认 `%APPDATA%/claude-code-router/gateway.config.json` 存在且有 DeepSeek provider。脚本会从这里自动读 key，无需手动配置。
 
 ## 附赠：配套主题
 

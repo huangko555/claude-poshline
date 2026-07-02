@@ -140,8 +140,28 @@ if ($rl) {
 }
 }   # end of Anthropic-only quota block
 
-# ---- DeepSeek balance (cached 5min) ----
+# ---- DeepSeek balance (cached 5min, auto-detect proxy vs direct) ----
 if ($isDS) {
+    # Auto-detect CCR: base URL points to local proxy -> read real key from CCR config
+    $isCCR = $false
+    if ($env:ANTHROPIC_BASE_URL -match '127\.0\.0\.1|localhost') { $isCCR = $true }
+    if ($env:ANTHROPIC_API_BASE_URL -match '127\.0\.0\.1|localhost') { $isCCR = $true }
+
+    $dsKey = $env:ANTHROPIC_AUTH_TOKEN                                      # default: direct-connect key
+    if ($isCCR) {
+        $ccrConfig = "$env:APPDATA\claude-code-router\gateway.config.json"
+        if (Test-Path $ccrConfig) {
+            $ccrLastKey = $null
+            foreach ($l in (Get-Content $ccrConfig -ErrorAction SilentlyContinue)) {
+                if ($l -match '"apikey":\s*"([^"]+)"') { $ccrLastKey = $Matches[1] }
+                elseif ($l -match '"baseurl".*deepseek' -and $ccrLastKey) {
+                    $dsKey = $ccrLastKey                                      # found real DeepSeek key
+                    break
+                }
+            }
+        }
+    }
+
     $cacheFile = "$env:USERPROFILE\.claude\.poshline-balance"
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $bal = $null; $cacheFresh = $false
@@ -151,7 +171,7 @@ if ($isDS) {
         if ($cacheTs -and ($now - $cacheTs) -lt 300) { $cacheFresh = $true }
         if ($lines.Count -ge 2) { $bal = $lines[1] }
     }
-    if (-not $cacheFresh -and $env:ANTHROPIC_AUTH_TOKEN) {
+    if (-not $cacheFresh -and $dsKey) {
         $lockFile = "$env:USERPROFILE\.claude\.poshline-balance.lock"
         $skip = $false
         if (Test-Path $lockFile) {
@@ -162,7 +182,7 @@ if ($isDS) {
             "$now" | Set-Content $lockFile
             try {
                 $resp = Invoke-RestMethod -Uri "https://api.deepseek.com/user/balance" `
-                    -Headers @{Authorization="Bearer $env:ANTHROPIC_AUTH_TOKEN"; Accept="application/json"} `
+                    -Headers @{Authorization="Bearer $dsKey"; Accept="application/json"} `
                     -TimeoutSec 3 -ErrorAction Stop
                 $newBal = $resp.balance_infos[0].total_balance
                 if ($newBal) {
